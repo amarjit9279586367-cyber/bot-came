@@ -613,30 +613,20 @@ def delete_webhook():
     except Exception as e:
         return jsonify({"status":"error","message":str(e)})
 
-# ==================== INIT ON STARTUP ====================
-print("🚀 Initializing Telegram Bot...")
-init_db()
-os.makedirs("photos", exist_ok=True)
-os.makedirs("captured_photos", exist_ok=True)
-os.makedirs("exports", exist_ok=True)
-
-# Auto set webhook
-render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
-if render_url:
-    from config import Config  # just to update BASE_URL
-    import sys
-    # Update module-level BASE_URL
-    import app as app_module
-    app_module.BASE_URL = render_url
-    globals()["BASE_URL"] = render_url
-    webhook_url = f"{render_url}/webhook/{BOT_TOKEN}"
+# ==================== APP STARTUP HANDLER ====================
+# Yeh Flask ke server start hone ke BAAD chalega - safely
+with app.app_context():
+    print("🚀 Initializing Telegram Bot...")
     try:
-        r = requests.get(f"{TELEGRAM_API}/setWebhook?url={webhook_url}", timeout=10).json()
-        print(f"✅ Webhook set: {r.get('description', 'OK')}")
+        init_db()
+        os.makedirs("photos", exist_ok=True)
+        os.makedirs("captured_photos", exist_ok=True)
+        os.makedirs("exports", exist_ok=True)
+        print("✅ Database & directories ready")
     except Exception as e:
-        print(f"❌ Webhook error: {e}")
-else:
-    print("⚠️ RENDER_EXTERNAL_URL not set. Visit /set_webhook manually.")
-    print(f"   Webhook URL will be: {BASE_URL}/webhook/{BOT_TOKEN}")
+        print(f"⚠️ Init warning (non-critical): {e}")
 
-print(f"🤖 Bot ready! Admin: /admin | Health: /health")
+# Webhook set karne ke liye ek route hai already:
+# /set_webhook pe visit karein deploy ke baad
+print("🤖 App loaded! Visit /set_webhook after deploy to register webhook.")
+print(f"📡 Health check: /health")
