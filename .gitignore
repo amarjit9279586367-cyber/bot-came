@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.db
+photos/
+captured_photos/
+exports/
+.env
+venv/
