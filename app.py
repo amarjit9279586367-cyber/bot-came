@@ -265,8 +265,7 @@ def handle_admin_panel(chat_id):
         reply_markup=kb)
 
 def handle_callback(cb):
-    data = cb.get("data", "")
-        print("CALLBACK DATA:", data)
+    data = cb.get("data", "") 
     chat_id = cb["message"]["chat"]["id"]
     msg_id = cb["message"]["message_id"]
     cb_id = cb["id"]
