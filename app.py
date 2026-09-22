@@ -414,8 +414,8 @@ def process_update(update):
             else:
                 send_msg(chat_id, "Use /start se menu kholo.")
 
-        if "callback_query" in update:
-            handle_callback(update["callback_query"])
+     if "callback_query" in update:
+         handle_callback(update["callback_query"])
     except Exception as e:
         logger.error("process_update: %s", e, exc_info=True)
 
