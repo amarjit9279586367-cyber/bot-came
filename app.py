@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
 
 # ==================== CONFIG (HARDCODED) ====================
-BOT_TOKEN = "8680846598:AAE0o3vS2fn16ZuIvvPJjXeuPQubDT2eUo8"
+BOT_TOKEN = "8943025478:AAFAs7FEAk_vEZKBUoS7zbFgRlCPNMaSwHQ"
 ADMIN_IDS = [8691519315]
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 BASE_URL = RENDER_URL if RENDER_URL else "http://localhost:5000"
