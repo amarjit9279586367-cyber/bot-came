@@ -470,7 +470,7 @@ def process_update(update):
                     handle_admin_panel(chat_id)
                 else:
                     send_msg(chat_id, "❌ Unauthorized.")
-                    elif chat_id in ADMIN_IDS and chat_id in WAITING_CHANNEL_ADD and text:
+            elif chat_id in ADMIN_IDS and chat_id in WAITING_CHANNEL_ADD and text:
                 WAITING_CHANNEL_ADD.discard(chat_id)
                 raw = text.strip()
                 if "t.me/" in raw:
