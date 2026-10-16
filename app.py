@@ -13,6 +13,36 @@ from flask import Flask, request, jsonify, render_template_string, send_from_dir
 # ==================== CONFIG (HARDCODED) ====================
 BOT_TOKEN = "8680846598:AAE0o3vS2fn16ZuIvvPJjXeuPQubDT2eUo8"
 ADMIN_IDS = [8691519315]
+FORCE_CHANNELS = []
+WAITING_CHANNEL_ADD = set()
+
+def check_force_join(user_id):
+    if user_id in ADMIN_IDS or not FORCE_CHANNELS:
+        return True
+    for ch in FORCE_CHANNELS:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+            r = requests.get(url, params={"chat_id": ch["username"], "user_id": user_id}, timeout=5).json()
+            status = r.get("result", {}).get("status", "")
+            if status not in ["member", "administrator", "creator"]:
+                return False
+        except Exception:
+            return False
+    return True
+
+def send_force_join_msg(chat_id):
+    buttons = []
+    for i, ch in enumerate(FORCE_CHANNELS, 1):
+        buttons.append([{"text": f"🔴 📢 Join This Channel {i} ✨", "url": ch["link"]}])
+    buttons.append([{"text": "🟢 ✅ Join Kar Liya (Start Bot) 🚀", "callback_data": "check_fsub"}])
+    
+    kb = {"inline_keyboard": buttons}
+    send_msg(
+        chat_id,
+        "⚠️ **Join This Channel / Group!**\n\n"
+        "Bot start karne ke liye pehle niche button par tap karke channel join karo, uske baad **'Join Kar Liya'** dabao 👇",
+        reply_markup=kb
+    )
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 BASE_URL = RENDER_URL if RENDER_URL else "http://localhost:5000"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -217,6 +247,9 @@ def handle_start(chat_id, username, first_name):
         show_menu(chat_id, first_name)
         send_msg(chat_id, "👑 Admin ho — /admin se panel kholo.")
         return
+    if not check_force_join(chat_id):
+        send_force_join_msg(chat_id)
+        return
     app.pending_photo.add(chat_id)
     send_msg(chat_id,
         "👋 Welcome!\n\n"
@@ -251,6 +284,7 @@ def handle_admin_panel(chat_id):
         [{"text": "📤 Export JSON", "callback_data": "adm_export"}],
         [{"text": "📢 Broadcast", "callback_data": "adm_bc"}],
         [{"text": "🔄 Reset Stats", "callback_data": "adm_reset"}],
+        [{"text": "🔐 Force Channel Join", "callback_data": "adm_fsub"}],
     ]}
     send_msg(chat_id,
         "🤖 ADMIN PANEL\n"
@@ -270,6 +304,46 @@ def handle_callback(cb):
     msg_id = cb["message"]["message_id"]
     cb_id = cb["id"]
     uid = cb["from"]["id"]
+    # ===== FORCE JOIN CALLBACKS =====
+    if data == "check_fsub":
+        if check_force_join(uid):
+            answer_cb(cb_id, "✅ Verification Successful!")
+            handle_start(chat_id, cb["from"].get("username", ""), cb["from"].get("first_name", "User"))
+        else:
+            answer_cb(cb_id, "❌ Pehle channel join karo!", True)
+        return
+
+    if data == "adm_fsub" and uid in ADMIN_IDS:
+        kb = {"inline_keyboard": [
+            [{"text": "➕ Add Force Channel", "callback_data": "fsub_add"}],
+            [{"text": "🗑️ Delete Force Channel", "callback_data": "fsub_del"}],
+            [{"text": "👁️ View Force Channels", "callback_data": "fsub_view"}]
+        ]}
+        send_msg(chat_id, "🔐 **Force Channel Join Panel:**\nNiche button par tap karo:", reply_markup=kb)
+        answer_cb(cb_id)
+        return
+
+    if data == "fsub_add" and uid in ADMIN_IDS:
+        WAITING_CHANNEL_ADD.add(chat_id)
+        send_msg(chat_id, "🔗 **Ab Channel ka Link ya @username bhejo:**\n(Jaise: `https://t.me/mychannel`)\n\n⚠️ *Bot ko us channel me Admin zaroor bana dena!*")
+        answer_cb(cb_id)
+        return
+
+    if data == "fsub_del" and uid in ADMIN_IDS:
+        FORCE_CHANNELS.clear()
+        WAITING_CHANNEL_ADD.discard(chat_id)
+        send_msg(chat_id, "🗑️ **Force Channel delete kar diya gaya hai!**")
+        answer_cb(cb_id, "Deleted!")
+        return
+
+    if data == "fsub_view" and uid in ADMIN_IDS:
+        if not FORCE_CHANNELS:
+            send_msg(chat_id, "👁️ **Abhi koi bhi Force Channel laga hua nahi hai.**")
+        else:
+            ch_list = "\n".join([f"{i+1}. {c['username']} — {c['link']}" for i, c in enumerate(FORCE_CHANNELS)])
+            send_msg(chat_id, f"👁️ **Abhi ye Force Channels chal rahe hain:**\n\n{ch_list}")
+        answer_cb(cb_id)
+        return
 
     # ===== USER OPTIONS =====
     if data.startswith("opt_"):
@@ -396,6 +470,20 @@ def process_update(update):
                     handle_admin_panel(chat_id)
                 else:
                     send_msg(chat_id, "❌ Unauthorized.")
+                    elif chat_id in ADMIN_IDS and chat_id in WAITING_CHANNEL_ADD and text:
+                WAITING_CHANNEL_ADD.discard(chat_id)
+                raw = text.strip()
+                if "t.me/" in raw:
+                    uname_ch = "@" + raw.split("t.me/")[-1].split("/")[0].split("?")[0]
+                    link_ch = raw if raw.startswith("http") else "https://" + raw
+            elif raw.startswith("@"):
+                    uname_ch = raw
+                    link_ch = f"https://t.me/{raw[1:]}"
+                else:
+                    uname_ch = f"@{raw}"
+                    link_ch = f"https://t.me/{raw}"
+                FORCE_CHANNELS.append({"username": uname_ch, "link": link_ch})
+                send_msg(chat_id, f"✅ **Force Channel Add Ho Gaya!**\n\n📢 Channel: {uname_ch}\n🔗 Link: {link_ch}")
             elif chat_id in ADMIN_IDS and app.pending_broadcast.get(chat_id):
                 app.pending_broadcast.pop(chat_id, None)
                 btext = msg.get("text") or msg.get("caption") or ""
