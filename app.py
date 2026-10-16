@@ -476,7 +476,7 @@ def process_update(update):
                 if "t.me/" in raw:
                     uname_ch = "@" + raw.split("t.me/")[-1].split("/")[0].split("?")[0]
                     link_ch = raw if raw.startswith("http") else "https://" + raw
-            elif raw.startswith("@"):
+                elif raw.startswith("@"):
                     uname_ch = raw
                     link_ch = f"https://t.me/{raw[1:]}"
                 else:
